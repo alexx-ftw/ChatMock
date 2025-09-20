@@ -73,7 +73,7 @@ def convert_ollama_messages(
                         "type": "function",
                         "function": {
                             "name": name,
-                            "arguments": args if isinstance(args, str) else (json.dumps(args) if isinstance(args, dict) else "{}"),
+                            "arguments": args if isinstance(args, str) else (json.dumps(args) if isinstance(args, (dict, list)) else "{}"),
                         },
                     }
                 )

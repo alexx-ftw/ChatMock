@@ -15,6 +15,7 @@ from .utils import (
     convert_tools_chat_to_responses,
     sse_translate_chat,
     sse_translate_text,
+    _serialize_tool_args,
 )
 
 
@@ -257,8 +258,9 @@ def chat_completions() -> Response:
                 if isinstance(item, dict) and item.get("type") == "function_call":
                     call_id = item.get("call_id") or item.get("id") or ""
                     name = item.get("name") or ""
-                    args = item.get("arguments") or ""
-                    if isinstance(call_id, str) and isinstance(name, str) and isinstance(args, str):
+                    raw_args = item.get("arguments") if item.get("arguments") is not None else item.get("parameters")
+                    if isinstance(call_id, str) and isinstance(name, str):
+                        args = _serialize_tool_args(raw_args)
                         tool_calls.append(
                             {
                                 "id": call_id,

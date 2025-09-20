@@ -12,7 +12,7 @@ from .http import build_cors_headers
 from .reasoning import build_reasoning_param, extract_reasoning_from_model_name
 from .transform import convert_ollama_messages, normalize_ollama_tools
 from .upstream import normalize_model_name, start_upstream_request
-from .utils import convert_chat_messages_to_responses_input, convert_tools_chat_to_responses
+from .utils import convert_chat_messages_to_responses_input, convert_tools_chat_to_responses, _serialize_tool_args
 
 
 ollama_bp = Blueprint("ollama", __name__)
@@ -445,8 +445,9 @@ def ollama_chat() -> Response:
                 if isinstance(item, dict) and item.get("type") == "function_call":
                     call_id = item.get("call_id") or item.get("id") or ""
                     name = item.get("name") or ""
-                    args = item.get("arguments") or ""
-                    if isinstance(call_id, str) and isinstance(name, str) and isinstance(args, str):
+                    raw_args = item.get("arguments") if item.get("arguments") is not None else item.get("parameters")
+                    if isinstance(call_id, str) and isinstance(name, str):
+                        args = _serialize_tool_args(raw_args)
                         tool_calls.append(
                             {
                                 "id": call_id,

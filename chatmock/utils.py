@@ -9,6 +9,31 @@ import sys
 from typing import Any, Dict, List
 
 
+def _serialize_tool_args(eff_args: Any) -> str:
+    """
+    Serialize tool call arguments with proper JSON handling.
+
+    - dict/list -> JSON as-is
+    - string that parses to dict/list -> use parsed
+    - other strings -> {"query": <str>}
+    - anything else -> "{}"
+    """
+    if isinstance(eff_args, (dict, list)):
+        return json.dumps(eff_args)
+    if isinstance(eff_args, str):
+        s = eff_args
+        ch = s[:1]
+        if ch in ("{", "["):
+            try:
+                parsed = json.loads(s)
+                if isinstance(parsed, (dict, list)):
+                    return json.dumps(parsed)
+            except Exception:
+                pass
+        return json.dumps({"query": s})
+    return "{}"
+
+
 def eprint(*args, **kwargs) -> None:
     print(*args, file=sys.stderr, **kwargs)
 
@@ -254,30 +279,6 @@ def sse_translate_chat(
     ws_index: dict[str, int] = {}
     ws_next_index: int = 0
     
-    def _serialize_tool_args(eff_args: Any) -> str:
-        """
-        Serialize tool call arguments with proper JSON handling.
-        
-        Args:
-            eff_args: Arguments to serialize (dict, list, str, or other)
-            
-        Returns:
-            JSON string representation of the arguments
-        """
-        if isinstance(eff_args, (dict, list)):
-            return json.dumps(eff_args)
-        elif isinstance(eff_args, str):
-            try:
-                parsed = json.loads(eff_args)
-                if isinstance(parsed, (dict, list)):
-                    return json.dumps(parsed) 
-                else:
-                    return json.dumps({"query": eff_args})  
-            except (json.JSONDecodeError, ValueError):
-                return json.dumps({"query": eff_args})
-        else:
-            return "{}"
-    
     def _extract_usage(evt: Dict[str, Any]) -> Dict[str, int] | None:
         try:
             usage = (evt.get("response") or {}).get("usage")
@@ -321,12 +322,17 @@ def sse_translate_chat(
                             pass
                     item = evt.get('item') if isinstance(evt.get('item'), dict) else {}
                     params_dict = ws_state.setdefault(call_id, {}) if isinstance(ws_state.get(call_id), dict) else {}
+                    params_str: str | None = None
                     def _merge_from(src):
                         if not isinstance(src, dict):
                             return
                         for whole in ('parameters','args','arguments','input'):
-                            if isinstance(src.get(whole), dict):
-                                params_dict.update(src.get(whole))
+                            val = src.get(whole)
+                            if isinstance(val, dict):
+                                params_dict.update(val)
+                            elif isinstance(val, str) and val:
+                                nonlocal params_str
+                                params_str = val
                         if isinstance(src.get('query'), str): params_dict.setdefault('query', src.get('query'))
                         if isinstance(src.get('q'), str): params_dict.setdefault('query', src.get('q'))
                         for rk in ('recency','time_range','days'):
@@ -337,7 +343,7 @@ def sse_translate_chat(
                             if src.get(mk) is not None and 'max_results' not in params_dict: params_dict['max_results'] = src.get(mk)
                     _merge_from(item)
                     _merge_from(evt if isinstance(evt, dict) else None)
-                    params = params_dict if params_dict else None
+                    params = params_dict if params_dict else (params_str if isinstance(params_str, str) else None)
                     if isinstance(params, dict):
                         try:
                             ws_state.setdefault(call_id, {}).update(params)
@@ -345,44 +351,45 @@ def sse_translate_chat(
                             pass
                     eff_params = ws_state.get(call_id, params if isinstance(params, (dict, list, str)) else {})
                     args_str = _serialize_tool_args(eff_params)
-                    if call_id not in ws_index:
-                        ws_index[call_id] = ws_next_index
-                        ws_next_index += 1
-                    _idx = ws_index.get(call_id, 0)
-                    delta_chunk = {
-                        "id": response_id,
-                        "object": "chat.completion.chunk",
-                        "created": created,
-                        "model": model,
-                        "choices": [
-                            {
-                                "index": 0,
-                                "delta": {
-                                    "tool_calls": [
-                                        {
-                                            "index": _idx,
-                                            "id": call_id,
-                                            "type": "function",
-                                            "function": {"name": "web_search", "arguments": args_str},
-                                        }
-                                    ]
-                                },
-                                "finish_reason": None,
-                            }
-                        ],
-                    }
-                    yield f"data: {json.dumps(delta_chunk)}\n\n".encode("utf-8")
-                    if kind.endswith(".completed") or kind.endswith(".done"):
-                        finish_chunk = {
+                    if isinstance(call_id, str) and isinstance(args_str, str):
+                        if call_id not in ws_index:
+                            ws_index[call_id] = ws_next_index
+                            ws_next_index += 1
+                        _idx = ws_index.get(call_id, 0)
+                        delta_chunk = {
                             "id": response_id,
                             "object": "chat.completion.chunk",
                             "created": created,
                             "model": model,
                             "choices": [
-                                {"index": 0, "delta": {}, "finish_reason": "tool_calls"}
+                                {
+                                    "index": 0,
+                                    "delta": {
+                                        "tool_calls": [
+                                            {
+                                                "index": _idx,
+                                                "id": call_id,
+                                                "type": "function",
+                                                "function": {"name": "web_search", "arguments": args_str},
+                                            }
+                                        ]
+                                    },
+                                    "finish_reason": None,
+                                }
                             ],
                         }
-                        yield f"data: {json.dumps(finish_chunk)}\n\n".encode("utf-8")
+                        yield f"data: {json.dumps(delta_chunk)}\n\n".encode("utf-8")
+                        if kind.endswith(".completed") or kind.endswith(".done"):
+                            finish_chunk = {
+                                "id": response_id,
+                                "object": "chat.completion.chunk",
+                                "created": created,
+                                "model": model,
+                                "choices": [
+                                    {"index": 0, "delta": {}, "finish_reason": "tool_calls"}
+                                ],
+                            }
+                            yield f"data: {json.dumps(finish_chunk)}\n\n".encode("utf-8")
                 except Exception:
                     pass
 
@@ -429,11 +436,11 @@ def sse_translate_chat(
                             vlog(f"CM_TOOLS response.output_item.done web_search_call id={call_id} has_args={bool(args)}")
                         except Exception:
                             pass
-                    if call_id not in ws_index:
-                        ws_index[call_id] = ws_next_index
-                        ws_next_index += 1
-                    _idx = ws_index.get(call_id, 0)
                     if isinstance(call_id, str) and isinstance(name, str) and isinstance(args, str):
+                        if call_id not in ws_index:
+                            ws_index[call_id] = ws_next_index
+                            ws_next_index += 1
+                        _idx = ws_index.get(call_id, 0)
                         delta_chunk = {
                             "id": response_id,
                             "object": "chat.completion.chunk",
