@@ -112,6 +112,23 @@ curl http://127.0.0.1:8000/v1/chat/completions \
 - Some context length might be taken up by internal instructions (but they dont seem to degrade the model) 
 - Use responsibly and at your own risk. This project is not affiliated with OpenAI, and is a educational exercise.
 
+### Tool Argument Shape
+
+- Tool arguments can be objects, arrays, or plain strings depending on what the model emits.
+- Serialization rules used across streaming and non‑streaming paths:
+  - Object (dict) or array (list) → serialized as‑is.
+  - String that parses to an object/array → parsed and used.
+  - Other strings → wrapped as `{ "query": "<string>" }`.
+- Arrays are preserved. If your tool schema expects a top‑level object, ensure your client handles both shapes or wraps arrays before consuming.
+
+Examples
+
+```
+"{\"city\":\"Paris\"}"   → {"city":"Paris"}
+"vector databases"        → {"query":"vector databases"}
+["a","b"]                 → ["a","b"]
+```
+
 # Supported models
 - `gpt-5`
 - `gpt-5-codex`
